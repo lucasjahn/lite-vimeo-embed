@@ -4,7 +4,11 @@
   "description": "A faster vimeo embed.",
   "type": "module",
   "main": "lite-vimeo-embed.js",
-  "files": [],
+  "files": [
+    "lite-vimeo-embed.js",
+    "lite-vimeo-embed-enhanced.js",
+    "src/"
+  ],
   "scripts": {
     "lint": "npx eslint *.js -c ./node_modules/wet-run/.eslintrc.json",
     "dev": "wet serve"
