@@ -160,7 +160,16 @@ export class VimeoOEmbedAPIClient extends VimeoAPIClient {
 
   async fetchRaw(identifier) {
     const videoUrl = createVideoUrl(identifier);
-    const oembedUrl = `${this.endpoint}?url=${encodeURIComponent(videoUrl)}`;
+
+    // Request higher resolution thumbnail by specifying width/height
+    // Default oEmbed gives 480x360, we request larger for better quality
+    const params = new URLSearchParams({
+      url: videoUrl,
+      width: 1280,  // Request HD width for better thumbnail quality
+      height: 720   // Request HD height for better thumbnail quality
+    });
+
+    const oembedUrl = `${this.endpoint}?${params.toString()}`;
 
     const response = await this.fetchWithTimeout(oembedUrl);
 
@@ -238,80 +247,69 @@ export class VimeoOEmbedAPIClient extends VimeoAPIClient {
 }
 
 /**
- * API Strategy Router
- * Intelligently routes requests to the appropriate API based on video type
- * and implements fallback strategies for resilience.
+ * API Strategy Router - Updated for 2024/2025 Best Practices
+ * Uses oEmbed API for ALL videos (Vimeo API v2 is deprecated)
+ * Implements fallback strategies for resilience.
  */
 export class APIStrategyRouter {
   constructor(options = {}) {
     this.timeout = options.timeout || 10000;
     this.enableFallback = options.enableFallback !== false;
 
-    this.v2Client = new VimeoV2APIClient(this.timeout);
+    // Primary strategy: oEmbed API for all videos (v2 is deprecated)
     this.oembedClient = new VimeoOEmbedAPIClient(this.timeout);
+
+    // Legacy fallback: V2 API (deprecated but kept for extreme fallback cases)
+    this.v2Client = new VimeoV2APIClient(this.timeout);
   }
 
   /**
-   * Fetch video metadata using the optimal API strategy
+   * Fetch video metadata using oEmbed API (recommended for all videos)
    * @param {Object} identifier - Video identifier
    * @returns {Promise<Object>} Video metadata
    */
   async fetchVideoMetadata(identifier) {
-    if (isPrivateVideo(identifier)) {
-      return this.fetchPrivateVideoMetadata(identifier);
-    } else {
-      return this.fetchPublicVideoMetadata(identifier);
-    }
-  }
-
-  /**
-   * Fetch metadata for private videos
-   * @param {Object} identifier - Video identifier
-   * @returns {Promise<Object>} Video metadata
-   */
-  async fetchPrivateVideoMetadata(identifier) {
     try {
-      // Private videos require oEmbed API
+      // Use oEmbed API for all videos (2024+ best practice)
       return await this.oembedClient.fetchMetadata(identifier);
     } catch (error) {
       if (!this.enableFallback || !error.recoverable) {
         throw error;
       }
 
-      // Fallback: try as public video (might be unlisted but accessible)
-      try {
-        const publicIdentifier = { ...identifier, isPrivate: false };
-        delete publicIdentifier.privacyHash;
-        return await this.v2Client.fetchMetadata(publicIdentifier);
-      } catch (fallbackError) {
-        // If fallback fails, throw the original error
+      // Fallback strategy for public videos only (v2 doesn't support private)
+      if (!isPrivateVideo(identifier)) {
+        try {
+          console.warn('oEmbed failed, trying deprecated V2 API as fallback');
+          return await this.v2Client.fetchMetadata(identifier);
+        } catch (fallbackError) {
+          // If V2 fallback fails, throw the original oEmbed error
+          console.error('Both oEmbed and V2 fallback failed');
+          throw error;
+        }
+      } else {
+        // No fallback for private videos (v2 doesn't support them)
         throw error;
       }
     }
   }
 
   /**
-   * Fetch metadata for public videos
-   * @param {Object} identifier - Video identifier
-   * @returns {Promise<Object>} Video metadata
+   * @deprecated - Legacy method for backward compatibility
+   * Use fetchVideoMetadata() instead
+   */
+  async fetchPrivateVideoMetadata(identifier) {
+    console.warn('fetchPrivateVideoMetadata is deprecated. Use fetchVideoMetadata() instead.');
+    return this.fetchVideoMetadata(identifier);
+  }
+
+  /**
+   * @deprecated - Legacy method for backward compatibility
+   * Use fetchVideoMetadata() instead
    */
   async fetchPublicVideoMetadata(identifier) {
-    try {
-      // Public videos use faster V2 API
-      return await this.v2Client.fetchMetadata(identifier);
-    } catch (error) {
-      if (!this.enableFallback || !error.recoverable) {
-        throw error;
-      }
-
-      // Fallback: try oEmbed API
-      try {
-        return await this.oembedClient.fetchMetadata(identifier);
-      } catch (fallbackError) {
-        // If fallback fails, throw the original error
-        throw error;
-      }
-    }
+    console.warn('fetchPublicVideoMetadata is deprecated. Use fetchVideoMetadata() instead.');
+    return this.fetchVideoMetadata(identifier);
   }
 }
 
