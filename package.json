@@ -1,12 +1,12 @@
 {
   "name": "lite-vimeo-embed",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "A faster vimeo embed.",
   "type": "module",
   "main": "lite-vimeo-embed.js",
   "files": [
     "lite-vimeo-embed.js",
-    "lite-vimeo-embed-enhanced.js",
+    "lite-vimeo-embed-legacy.js",
     "src/"
   ],
   "scripts": {

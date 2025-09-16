@@ -1,3 +1,28 @@
+/**
+ * Enhanced lite-vimeo-embed with private video support
+ * Provides fast-loading Vimeo video embeds with support for both public and private videos
+ *
+ * Key improvements:
+ * - Private/unlisted video support via privacy hash detection
+ * - Dual API strategy (V2 + oEmbed) with intelligent fallback
+ * - Enhanced error handling and resilience
+ * - Backward compatibility maintained
+ */
+
+import {
+  parseVideoIdentifier,
+  validateVideoId,
+  validatePrivacyHash,
+  isPrivateVideo,
+  createIframeUrl
+} from './src/utils/privacy-hash-parser.js';
+
+import {
+  createAPIRouter,
+  VimeoAPIError
+} from './src/api/vimeo-api-client.js';
+
+// Inject CSS styles (same as original)
 const style = document.head.appendChild(document.createElement('style'));
 style.textContent = /*css*/`
 
@@ -67,35 +92,54 @@ style.textContent = /*css*/`
     opacity: 0;
     pointer-events: none;
   }
+
+  /* Error state styles */
+  lite-vimeo.ltv-error {
+    background-color: #333;
+    cursor: default;
+  }
+
+  lite-vimeo.ltv-error > .ltv-playbtn {
+    background: rgba(255, 0, 0, 0.75);
+  }
+
+  lite-vimeo.ltv-error > .ltv-playbtn::before {
+    border-style: solid;
+    border-width: 8px;
+    border-color: transparent;
+    width: 4px;
+    height: 4px;
+    background: #fff;
+    border-radius: 50%;
+  }
 `;
 
 /**
- * Ported from https://github.com/paulirish/lite-youtube-embed
- *
- * A lightweight vimeo embed. Still should feel the same to the user, just MUCH faster to initialize and paint.
- *
- * Thx to these as the inspiration
- *   https://storage.googleapis.com/amp-vs-non-amp/youtube-lazy.html
- *   https://autoplay-youtube-player.glitch.me/
- *
- * Once built it, I also found these:
- *   https://github.com/ampproject/amphtml/blob/master/extensions/amp-youtube (👍👍)
- *   https://github.com/Daugilas/lazyYT
- *   https://github.com/vb/lazyframe
+ * Enhanced LiteVimeo component with private video support
+ * Maintains backward compatibility while adding new features
  */
-class LiteVimeo extends (globalThis.HTMLElement ?? class {}) {
+class LiteVimeoEnhanced extends (globalThis.HTMLElement ?? class {}) {
+  constructor() {
+    super();
+    this.apiRouter = createAPIRouter({ timeout: 10000 });
+    this.metadata = null;
+    this.identifier = null;
+    this.isInitialized = false;
+  }
+
+  /**
+   * Observed attributes for reactivity
+   */
+  static get observedAttributes() {
+    return ['videoid', 'privacy-hash', 'video-url', 'params', 'playlabel'];
+  }
+
   /**
    * Begin pre-connecting to warm up the iframe load
-   * Since the embed's network requests load within its iframe,
-   *   preload/prefetch'ing them outside the iframe will only cause double-downloads.
-   * So, the best we can do is warm up a few connections to origins that are in the critical path.
-   *
-   * Maybe `<link rel=preload as=document>` would work, but it's unsupported: http://crbug.com/593267
-   * But TBH, I don't think it'll happen soon with Site Isolation and split caches adding serious complexity.
    */
   static _warmConnections() {
-    if (LiteVimeo.preconnected) return;
-    LiteVimeo.preconnected = true;
+    if (LiteVimeoEnhanced.preconnected) return;
+    LiteVimeoEnhanced.preconnected = true;
 
     // The iframe document and most of its subresources come right off player.vimeo.com
     addPrefetch('preconnect', 'https://player.vimeo.com');
@@ -105,76 +149,314 @@ class LiteVimeo extends (globalThis.HTMLElement ?? class {}) {
     addPrefetch('preconnect', 'https://f.vimeocdn.com');
     // Metrics
     addPrefetch('preconnect', 'https://fresnel.vimeocdn.com');
+    // oEmbed API
+    addPrefetch('preconnect', 'https://vimeo.com');
   }
 
-  connectedCallback() {
-    this.videoId = this.getAttribute('videoid');
+  /**
+   * Component lifecycle - connected to DOM
+   */
+  async connectedCallback() {
+    if (this.isInitialized) return;
 
-    /**
-     * Lo, the vimeo placeholder image!  (aka the thumbnail, poster image, etc)
-     * We have to use the Vimeo API.
-     */
-    let { width, height } = getThumbnailDimensions(this.getBoundingClientRect());
+    try {
+      await this.initializeComponent();
+    } catch (error) {
+      this.handleError(error);
+    }
+  }
+
+  /**
+   * Attribute change handler
+   */
+  attributeChangedCallback(name, oldValue, newValue) {
+    if (oldValue !== newValue && this.isInitialized) {
+      // Re-initialize when attributes change
+      this.isInitialized = false;
+      this.connectedCallback();
+    }
+  }
+
+  /**
+   * Initialize the component with enhanced video support
+   */
+  async initializeComponent() {
+    try {
+      // Parse video identifier from attributes
+      this.identifier = this.parseVideoIdentifier();
+
+      // Validate inputs
+      this.validateIdentifier(this.identifier);
+
+      // Fetch metadata using appropriate API strategy
+      this.metadata = await this.apiRouter.fetchVideoMetadata(this.identifier);
+
+      // Setup component UI
+      this.setupThumbnail();
+      this.setupPlayButton();
+      this.setupAccessibility();
+
+      this.isInitialized = true;
+
+      // Dispatch ready event
+      this.dispatchEvent(new CustomEvent('lite-vimeo-ready', {
+        detail: {
+          videoId: this.identifier.videoId,
+          title: this.metadata.title,
+          isPrivate: isPrivateVideo(this.identifier)
+        }
+      }));
+
+    } catch (error) {
+      console.warn('LiteVimeo initialization failed:', error.message);
+      this.handleError(error);
+    }
+  }
+
+  /**
+   * Parse video identifier from component attributes
+   */
+  parseVideoIdentifier() {
+    const videoUrl = this.getAttribute('video-url');
+    const videoId = this.getAttribute('videoid');
+    const privacyHash = this.getAttribute('privacy-hash');
+
+    if (videoUrl) {
+      return parseVideoIdentifier(videoUrl);
+    } else if (videoId) {
+      return parseVideoIdentifier(videoId, privacyHash);
+    } else {
+      throw new Error('Either video-url or videoid attribute is required');
+    }
+  }
+
+  /**
+   * Validate parsed video identifier
+   */
+  validateIdentifier(identifier) {
+    if (!validateVideoId(identifier.videoId)) {
+      throw new Error(`Invalid video ID: ${identifier.videoId}`);
+    }
+
+    if (identifier.privacyHash && !validatePrivacyHash(identifier.privacyHash)) {
+      throw new Error(`Invalid privacy hash: ${identifier.privacyHash}`);
+    }
+  }
+
+  /**
+   * Setup video thumbnail from metadata
+   */
+  setupThumbnail() {
+    if (!this.metadata || !this.metadata.thumbnailUrl) return;
+
+    // Calculate optimal thumbnail dimensions
+    const { width, height } = getThumbnailDimensions(this.getBoundingClientRect());
     let devicePixelRatio = window.devicePixelRatio || 1;
-    if (devicePixelRatio >= 2) devicePixelRatio *= .75;
-    width = Math.round(width * devicePixelRatio);
-    height = Math.round(height * devicePixelRatio);
+    if (devicePixelRatio >= 2) devicePixelRatio *= 0.75;
 
-    fetch(`https://vimeo.com/api/v2/video/${this.videoId}.json`)
-      .then(response => response.json())
-      .then(data => {
-        let thumbnailUrl = data[0].thumbnail_large;
-        thumbnailUrl = thumbnailUrl.replace(/-d_[\dx]+$/i, `-d_${width}x${height}`);
-        this.style.backgroundImage = `url("${thumbnailUrl}")`;
-      });
+    const scaledWidth = Math.round(width * devicePixelRatio);
+    const scaledHeight = Math.round(height * devicePixelRatio);
 
+    // Optimize thumbnail URL if it's a Vimeo CDN URL
+    let thumbnailUrl = this.metadata.thumbnailUrl;
+    if (thumbnailUrl.includes('vimeocdn.com')) {
+      thumbnailUrl = thumbnailUrl.replace(/-d_[\dx]+$/i, `-d_${scaledWidth}x${scaledHeight}`);
+    }
+
+    this.style.backgroundImage = `url("${thumbnailUrl}")`;
+  }
+
+  /**
+   * Setup play button with enhanced functionality
+   */
+  setupPlayButton() {
     let playBtnEl = this.querySelector('.ltv-playbtn');
-    // A label for the button takes priority over a [playlabel] attribute on the custom-element
-    this.playLabel = (playBtnEl && playBtnEl.textContent.trim()) || this.getAttribute('playlabel') || 'Play video';
 
+    // Get play label
+    this.playLabel = (playBtnEl && playBtnEl.textContent.trim()) ||
+                     this.getAttribute('playlabel') ||
+                     `Play video${this.metadata ? ': ' + this.metadata.title : ''}`;
+
+    // Create play button if it doesn't exist
     if (!playBtnEl) {
       playBtnEl = document.createElement('button');
       playBtnEl.type = 'button';
-      playBtnEl.setAttribute('aria-label', this.playLabel);
       playBtnEl.classList.add('ltv-playbtn');
       this.append(playBtnEl);
     }
+
+    // Setup button attributes
+    playBtnEl.setAttribute('aria-label', this.playLabel);
     playBtnEl.removeAttribute('href');
 
-    // On hover (or tap), warm up the TCP connections we're (likely) about to use.
-    this.addEventListener('pointerover', LiteVimeo._warmConnections, {
+    // Setup event listeners
+    this.setupEventListeners();
+  }
+
+  /**
+   * Setup accessibility features
+   */
+  setupAccessibility() {
+    // Ensure component is focusable and has proper ARIA attributes
+    if (!this.hasAttribute('tabindex')) {
+      this.setAttribute('tabindex', '0');
+    }
+
+    this.setAttribute('role', 'button');
+    this.setAttribute('aria-label', this.playLabel);
+
+    // Add keyboard navigation
+    this.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        this.addIframe();
+      }
+    });
+  }
+
+  /**
+   * Setup event listeners
+   */
+  setupEventListeners() {
+    // Warm connections on hover
+    this.addEventListener('pointerover', LiteVimeoEnhanced._warmConnections, {
       once: true
     });
 
-    // Once the user clicks, add the real iframe and drop our play button
-    // TODO: In the future we could be like amp-youtube and silently swap in the iframe during idle time
-    //   We'd want to only do this for in-viewport or near-viewport ones: https://github.com/ampproject/amphtml/pull/5003
-    this.addEventListener('click', this.addIframe);
+    // Handle click to play
+    this.addEventListener('click', this.addIframe.bind(this));
   }
 
+  /**
+   * Create and add the iframe for video playback
+   */
   addIframe() {
     if (this.classList.contains('ltv-activated')) return;
-    this.classList.add('ltv-activated');
 
-    const iframeEl = document.createElement('iframe');
-    iframeEl.width = 640;
-    iframeEl.height = 360;
-    // No encoding necessary as [title] is safe. https://cheatsheetseries.owasp.org/cheatsheets/Cross_Site_Scripting_Prevention_Cheat_Sheet.html#:~:text=Safe%20HTML%20Attributes%20include
-    iframeEl.title = this.playLabel;
-    iframeEl.allow = 'accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture';
-    // AFAIK, the encoding here isn't necessary for XSS, but we'll do it only because this is a URL
-    // https://stackoverflow.com/q/64959723/89484
-    iframeEl.src = `https://player.vimeo.com/video/${encodeURIComponent(this.videoId)}?autoplay=1`;
-    this.append(iframeEl);
+    try {
+      this.classList.add('ltv-activated');
 
-    // Set focus for a11y
-    iframeEl.addEventListener('load', iframeEl.focus, { once: true });
+      const iframeEl = document.createElement('iframe');
+      iframeEl.width = (this.metadata?.width || 640).toString();
+      iframeEl.height = (this.metadata?.height || 360).toString();
+      iframeEl.title = this.playLabel;
+      iframeEl.allow = 'accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture';
+      iframeEl.allowFullscreen = true;
+
+      // Create iframe URL with proper parameters including privacy hash
+      const params = this.getAttribute('params') || '';
+      iframeEl.src = createIframeUrl(this.identifier, params);
+
+      this.append(iframeEl);
+
+      // Set focus for accessibility
+      iframeEl.addEventListener('load', () => iframeEl.focus(), { once: true });
+
+      // Dispatch play event
+      this.dispatchEvent(new CustomEvent('lite-vimeo-play', {
+        detail: {
+          videoId: this.identifier.videoId,
+          title: this.metadata?.title || 'Unknown',
+          isPrivate: isPrivateVideo(this.identifier)
+        }
+      }));
+
+    } catch (error) {
+      this.handleError(error);
+    }
+  }
+
+  /**
+   * Handle errors gracefully with fallback
+   */
+  handleError(error) {
+    console.error('LiteVimeo Error:', error);
+
+    // Add error class for styling
+    this.classList.add('ltv-error');
+
+    // Try to create fallback iframe if we have a video ID
+    if (this.identifier && this.identifier.videoId) {
+      this.createFallbackIframe();
+    } else {
+      // Show error state in play button
+      const playBtn = this.querySelector('.ltv-playbtn');
+      if (playBtn) {
+        playBtn.setAttribute('aria-label', 'Video unavailable');
+        playBtn.style.cursor = 'not-allowed';
+      }
+    }
+
+    // Dispatch error event
+    this.dispatchEvent(new CustomEvent('lite-vimeo-error', {
+      detail: {
+        error: error.message,
+        videoId: this.identifier?.videoId || 'unknown',
+        isPrivate: this.identifier ? isPrivateVideo(this.identifier) : false
+      }
+    }));
+  }
+
+  /**
+   * Create fallback iframe when metadata fetch fails
+   */
+  createFallbackIframe() {
+    if (!this.identifier) return;
+
+    try {
+      const iframeEl = document.createElement('iframe');
+      iframeEl.width = '640';
+      iframeEl.height = '360';
+      iframeEl.title = this.playLabel || 'Vimeo video player';
+      iframeEl.allow = 'accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture';
+      iframeEl.allowFullscreen = true;
+
+      const params = this.getAttribute('params') || '';
+      iframeEl.src = createIframeUrl(this.identifier, params);
+
+      // Replace content with iframe
+      this.innerHTML = '';
+      this.appendChild(iframeEl);
+
+      console.info('LiteVimeo: Fallback iframe created');
+
+    } catch (fallbackError) {
+      console.error('LiteVimeo: Fallback iframe creation failed:', fallbackError);
+    }
+  }
+
+  /**
+   * Public API: Refresh the component (reload metadata)
+   */
+  async refresh() {
+    this.isInitialized = false;
+    this.classList.remove('ltv-activated', 'ltv-error');
+    this.style.backgroundImage = '';
+    this.innerHTML = '';
+    await this.connectedCallback();
+  }
+
+  /**
+   * Public API: Get current video information
+   */
+  getVideoInfo() {
+    return {
+      identifier: this.identifier,
+      metadata: this.metadata,
+      isInitialized: this.isInitialized,
+      isPrivate: this.identifier ? isPrivateVideo(this.identifier) : false
+    };
   }
 }
 
+// Register the enhanced component, maintaining backward compatibility
 if (globalThis.customElements && !globalThis.customElements.get('lite-vimeo')) {
-  globalThis.customElements.define('lite-vimeo', LiteVimeo);
+  globalThis.customElements.define('lite-vimeo', LiteVimeoEnhanced);
 }
+
+/**
+ * Utility functions (preserved from original)
+ */
 
 /**
  * Add a <link rel={preload | preconnect} ...> to the head
@@ -192,11 +474,6 @@ function addPrefetch(kind, url, as) {
 
 /**
  * Get the thumbnail dimensions to use for a given player size.
- *
- * @param {Object} options
- * @param {number} options.width The width of the player
- * @param {number} options.height The height of the player
- * @return {Object} The width and height
  */
 function getThumbnailDimensions({ width, height }) {
   let roundedWidth = width;
@@ -221,3 +498,7 @@ function getThumbnailDimensions({ width, height }) {
     height: roundedHeight
   };
 }
+
+// Export for module usage
+export { LiteVimeoEnhanced as LiteVimeo };
+export default LiteVimeoEnhanced;

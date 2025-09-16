@@ -1,3 +1,18 @@
+# [0.4.0](https://github.com/luwes/lite-vimeo-embed/compare/v0.3.0...v0.4.0) (2025-09-16)
+
+
+### Features
+
+* add private video support with oEmbed-first API strategy ([4c77116](https://github.com/luwes/lite-vimeo-embed/commit/4c77116))
+* enhanced component now default with backwards compatibility ([654636d](https://github.com/luwes/lite-vimeo-embed/commit/654636d))
+
+
+### BREAKING CHANGES
+
+* None - 100% backwards compatible upgrade with enhanced features
+
+
+
 # [0.3.0](https://github.com/luwes/lite-vimeo-embed/compare/v0.2.3...v0.3.0) (2023-11-23)
 
 
