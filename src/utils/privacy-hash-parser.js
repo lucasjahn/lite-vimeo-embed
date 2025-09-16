@@ -10,7 +10,7 @@
 const PRIVACY_PATTERNS = [
   {
     // https://vimeo.com/123456789/abc123def456
-    pattern: /vimeo\.com\/(\d+)\/([a-f0-9]{12})/i,
+    pattern: /vimeo\.com\/(\d+)\/([a-f0-9]{8,12})/i,
     extractor: (match) => ({
       videoId: match[1],
       privacyHash: match[2]
@@ -18,7 +18,7 @@ const PRIVACY_PATTERNS = [
   },
   {
     // https://player.vimeo.com/video/123456789?h=abc123def456
-    pattern: /player\.vimeo\.com\/video\/(\d+).*[?&]h=([a-f0-9]{12})/i,
+    pattern: /player\.vimeo\.com\/video\/(\d+).*[?&]h=([a-f0-9]{8,12})/i,
     extractor: (match) => ({
       videoId: match[1],
       privacyHash: match[2]
@@ -30,7 +30,7 @@ const PRIVACY_PATTERNS = [
  * Regular expressions for validation
  */
 const VIDEO_ID_PATTERN = /^\d{1,12}$/;
-const PRIVACY_HASH_PATTERN = /^[a-f0-9]{12}$/i;
+const PRIVACY_HASH_PATTERN = /^[a-f0-9]{8,12}$/i;
 
 /**
  * Parse video identifier from various input formats
