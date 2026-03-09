@@ -57,8 +57,7 @@ class VimeoAPIClient {
       const response = await fetch(url, {
         signal: controller.signal,
         headers: {
-          'Accept': 'application/json',
-          'User-Agent': 'lite-vimeo-embed/0.3.0'
+          'Accept': 'application/json'
         }
       });
 

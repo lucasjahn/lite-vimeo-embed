@@ -375,16 +375,13 @@ class LiteVimeoEnhanced extends (globalThis.HTMLElement ?? class {}) {
     // Add error class for styling
     this.classList.add('ltv-error');
 
-    // Try to create fallback iframe if we have a video ID
-    if (this.identifier && this.identifier.videoId) {
-      this.createFallbackIframe();
-    } else {
-      // Show error state in play button
-      const playBtn = this.querySelector('.ltv-playbtn');
-      if (playBtn) {
-        playBtn.setAttribute('aria-label', 'Video unavailable');
-        playBtn.style.cursor = 'not-allowed';
-      }
+    // Don't auto-create fallback iframe — let user click to load
+    // This prevents Safari CORS errors from bypassing click-to-play
+    // Show error state but keep play button functional
+    const playBtn = this.querySelector('.ltv-playbtn');
+    if (playBtn) {
+      // Remove error styling so button looks normal — click will still work
+      this.classList.remove('ltv-error');
     }
 
     // Dispatch error event
